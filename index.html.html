@@ -1,0 +1,197 @@
+<!doctype html>
+<html lang="de">
+<head>
+  <meta charset="utf-8">
+  <title>BESS Wirtschaftlichkeitsrechner</title>
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  <style>
+    @media print {
+      .btn, input, select, .form-range, .form-control, .form-label, .form-select { display: none !important; }
+      #roiChart { max-width: 100% !important; }
+    }
+    .form-section { margin-bottom: 1rem; }
+    #calculationLog ul { padding-left: 1.2em; }
+  </style>
+</head>
+<body class="p-3">
+  <div class="container">
+    <h2 class="mb-3">BESS Wirtschaftlichkeitsrechner</h2>
+    <form id="bessForm" onsubmit="event.preventDefault();calculate();">
+      <div class="row form-section">
+        <div class="col-md-3">
+          <label>CAPEX (€/kWh)</label>
+          <input type="number" class="form-control" id="capex_kWh" value="450" min="0" required>
+        </div>
+        <div class="col-md-3">
+          <label>Speichergröße (MWh)</label>
+          <input type="number" class="form-control" id="mwh" value="20" min="0" required>
+        </div>
+        <div class="col-md-3">
+          <label>Leistung (MW)</label>
+          <input type="number" class="form-control" id="mw" value="10" min="0" required>
+        </div>
+        <div class="col-md-3">
+          <label>Zyklen/Tag (max. 3)</label>
+          <input type="number" class="form-control" id="cycles" value="1.5" min="1" max="3">
+        </div>
+      </div>
+      <div class="row form-section">
+        <div class="col-md-3">
+          <label>Bundesland</label>
+          <select id="bundesland" class="form-select" onchange="setBKZ()">
+            <option value="34.57">Schleswig-Holstein</option>
+            <option value="50">Hamburg</option>
+            <option value="80">Niedersachsen</option>
+            <option value="70">Bremen</option>
+            <option value="100">Nordrhein-Westfalen</option>
+            <option value="120">Hessen</option>
+            <option value="130">Saarland</option>
+            <option value="90">Rheinland-Pfalz</option>
+            <option value="60" selected>Baden-Württemberg</option>
+            <option value="151.71">Bayern</option>
+            <option value="110">Thüringen</option>
+            <option value="100">Sachsen</option>
+            <option value="80">Sachsen-Anhalt</option>
+            <option value="70">Brandenburg</option>
+            <option value="40">Berlin</option>
+            <option value="50">Mecklenburg-Vorpommern</option>
+          </select>
+        </div>
+        <div class="col-md-3">
+          <label>BKZ (€ / kW)</label>
+          <input type="number" class="form-control" id="bkz" value="60" min="0">
+        </div>
+      </div>
+      <div class="row form-section">
+        <div class="col-md-3">
+          <label>Entfernung NAP (m)</label>
+          <input type="number" class="form-control" id="trassM" value="350" min="0">
+        </div>
+        <div class="col-md-5">
+          <label>% befestigt</label>
+          <input type="range" class="form-range" id="solidPercent" min="0" max="100" value="48" oninput="updateTrackRatio()">
+          <small id="trackRatio">Befestigt: 48%, Unbefestigt: 52%</small>
+        </div>
+        <div class="col-md-4">
+          <label>Grundstück (Pacht/Kauf)</label>
+          <select class="form-select" id="landUse" onchange="toggleLandCost()">
+            <option value="pacht" selected>Pacht</option>
+            <option value="kauf">Kauf</option>
+          </select>
+          <input type="number" class="form-control mt-2" id="landCost" value="10000" min="0">
+        </div>
+      </div>
+      <div class="text-end">
+        <button type="submit" class="btn btn-primary">Berechnen</button>
+      </div>
+    </form>
+
+    <div id="result" class="alert alert-info mt-3"></div>
+    <div class="row">
+      <div class="col-md-8"><canvas id="roiChart" height="300"></canvas></div>
+      <div class="col-md-4"><div id="calculationLog" class="border rounded p-3"></div></div>
+    </div>
+  </div>
+
+<script>
+function setBKZ(){
+  const def = parseFloat(document.getElementById('bundesland').value);
+  document.getElementById('bkz').value = def;
+  // Optional: Sofort berechnen, wenn gewünscht:
+  calculate();
+}
+function updateTrackRatio() {
+  const percent = document.getElementById('solidPercent').value;
+  document.getElementById('trackRatio').textContent = 'Befestigt: ' + percent + '%, Unbefestigt: ' + (100 - percent) + '%';
+}
+function toggleLandCost(){}
+function formatEUR(val) {
+  return val.toLocaleString('de-DE', { style: 'currency', currency: 'EUR', minimumFractionDigits: 2 });
+}
+function calculate(){
+  const capex_kWh = +document.getElementById('capex_kWh').value;
+  const mwh = +document.getElementById('mwh').value;
+  const mw = +document.getElementById('mw').value;
+  const cycles = +document.getElementById('cycles').value;
+  const bkz_val = +document.getElementById('bkz').value;
+  const trassM = +document.getElementById('trassM').value;
+  const solid = +document.getElementById('solidPercent').value;
+  const landUse = document.getElementById('landUse').value;
+  const landCost = +document.getElementById('landCost').value;
+
+  // Invest, OPEX, BKZ, Trasse
+  const capex = capex_kWh * 1000 * mwh;
+  const opex = capex * 0.015;
+  const bkz = bkz_val * mw * 1000;
+  const trasse = trassM * (solid / 100 * 400 + (100 - solid) / 100 * 200);
+
+  // Kabelauswahl auf Basis MW: grobe Annäherung
+  // 10kV: 1MW ≈ 57.7A | 20kV: 1MW ≈ 28.8A
+  const amp10kV = mw * 1000 / (Math.sqrt(3)*10000) ;
+  const amp20kV = mw * 1000 / (Math.sqrt(3)*20000) ;
+  // Kabelstärken nach https://www.leoni.com/fileadmin/cable-databook/DE/NS-MS/MS/MS_Kabel.pdf
+  // Beispiel für 20kV, Erde: 240mm² ca. 400A, 300mm² ca. 455A, 400mm² ca. 510A
+  let kabel = '';
+  if (amp20kV <= 400) {
+    kabel = 'NA2XS(F)2Y 1x240mm² (20kV, Erde, 400A)';
+  } else if (amp20kV <= 455) {
+    kabel = 'NA2XS(F)2Y 1x300mm² (20kV, Erde, 455A)';
+  } else if (amp20kV <= 510) {
+    kabel = 'NA2XS(F)2Y 1x400mm² (20kV, Erde, 510A)';
+  } else {
+    kabel = 'Mehrere Kabelstränge nötig (prüfen!)';
+  }
+
+  // Einnahmen grob: z.B. 335€/MWh pro Zyklus
+  const annualRevenue = mwh * cycles * 365 * 335;
+
+  const gesamt = capex + bkz + trasse + (landUse === "kauf" ? landCost : 0);
+  let npvArr = [-gesamt];
+  for(let i=1;i<=10;i++){
+    npvArr.push(npvArr[i-1] + annualRevenue - opex - (landUse==='pacht'?landCost:0));
+  }
+  const roiYears = npvArr.findIndex(v=>v>=0);
+
+  document.getElementById('result').innerHTML = `
+    <b>NPV nach 10 Jahren:</b> ${formatEUR(npvArr[10])}<br>
+    <b>Jährliche Einnahmen (angenommen):</b> ${formatEUR(annualRevenue)}<br>
+    <b>Gesamtinvestition:</b> ${formatEUR(gesamt)}<br>
+    <b>Jährlicher OPEX (1,5 % CAPEX):</b> ${formatEUR(opex)}
+  `;
+
+  document.getElementById('calculationLog').innerHTML = `
+    <b>Berechnungsprotokoll + Kabel</b>
+    <ul>
+      <li>CAPEX: ${capex_kWh.toLocaleString('de-DE')} €/kWh → ${formatEUR(capex)}</li>
+      <li>BKZ: ${bkz_val} €/kW × ${mw} MW → ${formatEUR(bkz)}</li>
+      <li>Trasse: ${trassM} m → ${formatEUR(trasse)}</li>
+      <li>Grundstück: ${formatEUR(landCost)}</li>
+      <li><b>Kabeltyp:</b> ${kabel}</li>
+      <li>Gesamtkosten: ${formatEUR(gesamt)}</li>
+      <li>OPEX (1,5 % CAPEX): ${formatEUR(opex)}</li>
+      <li>ROI (Break-Even): ${roiYears>0?roiYears:'nie'} Jahre</li>
+    </ul>`;
+
+  const ctx = document.getElementById('roiChart').getContext('2d');
+  if(window.chart) window.chart.destroy();
+  window.chart = new Chart(ctx, {
+    type:'line',
+    data:{
+      labels: [...Array(11).keys()].map(i=>'Jahr '+i),
+      datasets: [
+        { label:'Kumulierte Rendite', data: npvArr, borderColor:'blue', fill:false, pointRadius:2 }
+      ]
+    },
+    options:{responsive:true, plugins:{legend:{position:'top'},title:{display:true,text:'ROI-Verlauf über 10 Jahre'}}}
+  });
+}
+
+window.onload = function() {
+  updateTrackRatio();
+  setBKZ();
+  calculate();
+}
+</script>
+</body>
+</html>
